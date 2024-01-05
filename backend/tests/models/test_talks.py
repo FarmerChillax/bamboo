@@ -2,6 +2,8 @@ from datetime import datetime
 
 from bamboo.database import db, models
 
+from .utils import query_count
+
 
 def test_talk_category():
     site = models.Site(name="Test site", config={})
@@ -11,10 +13,14 @@ def test_talk_category():
     talk.categories.add_all([keynote, act])
     db.session.add_all([site, keynote, act, talk])
     db.session.commit()
-    assert set(talk.categories.all()) == {
+    assert set(db.session.scalars(talk.categories.select()).all()) == {
         keynote,
         act,
     }
+
+    db.session.delete(keynote)
+    db.session.commit()
+    assert db.session.scalars(talk.categories.select()).all() == [act]
 
 
 def test_talk_schedule():
@@ -28,3 +34,9 @@ def test_talk_schedule():
     db.session.add_all([site, talk, schedule_item, city, venue])
     db.session.commit()
     assert talk.schedule_item == schedule_item
+
+    db.session.delete(city)
+    db.session.commit()
+    assert query_count(models.Venue) == 0
+    assert query_count(models.ScheduleItem) == 0
+    assert query_count(models.Talk) == 1
