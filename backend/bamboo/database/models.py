@@ -1,8 +1,11 @@
+import mimetypes
+import os
 from datetime import datetime
-from typing import TYPE_CHECKING, NoReturn, Optional
+from typing import TYPE_CHECKING, Optional
 
 import sqlalchemy as sa
 import sqlalchemy.orm as so
+from flask import current_app
 from flask_sqlalchemy import SQLAlchemy
 from flask_sqlalchemy.model import Model
 from sqlalchemy import func
@@ -14,9 +17,12 @@ db = SQLAlchemy()
 # https://docs.sqlalchemy.org/en/20/dialects/sqlite.html#sqlite-foreign-keys
 @sa.event.listens_for(sa.engine.Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
+    import sqlite3
+
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 if TYPE_CHECKING:
@@ -62,9 +68,10 @@ class User(Base):
     name: so.Mapped[str]
     username: so.Mapped[Optional[str]] = so.mapped_column(unique=True, index=True)
     password_hash: so.Mapped[Optional[str]]
+    email: so.Mapped[Optional[str]]
     bio: so.Mapped[Optional[str]]
     introduction: so.Mapped[Optional[str]]
-    active: so.Mapped[bool] = so.mapped_column(default=False)
+    active: so.Mapped[bool] = so.mapped_column(default=True)
     is_superuser: so.Mapped[bool] = so.mapped_column(default=False)
     profile_image_id: so.Mapped[int] = so.mapped_column(
         sa.ForeignKey("media.id", ondelete="CASCADE"), index=True
@@ -82,7 +89,7 @@ class User(Base):
     )
 
     @property
-    def password(self) -> NoReturn:
+    def password(self) -> str:
         raise AttributeError("Write-only property!")
 
     @password.setter
@@ -94,6 +101,12 @@ class User(Base):
             return False
         return check_password_hash(self.password_hash, password)
 
+    def allow_login(self) -> bool:
+        """Only the user with a role and the role's permissions is not 0 are allowed to log in."""
+        if not self.active:
+            return False
+        return self.is_superuser or (self.role is not None and self.role.permissions != 0)
+
 
 class Role(Base):
     name: so.Mapped[str]
@@ -104,11 +117,41 @@ class Role(Base):
 class Media(Base):
     path: so.Mapped[str]
     content_type: so.Mapped[str]
+    file_type: so.Mapped[str]
+
+    @staticmethod
+    def get_file_type(filename: str, content_type: str) -> str:
+        suffix = os.path.splitext(filename)[1]
+        if content_type.startswith("image/"):
+            return "image"
+        elif content_type.startswith("video/"):
+            return "video"
+        elif content_type.startswith("audio/"):
+            return "audio"
+        elif suffix in (".pptx", ".key", ".ppt", ".pdf"):
+            return "slides"
+        else:
+            return "unknown"
+
+    @classmethod
+    def from_file(cls, filename: str) -> "Media":
+        content_type = mimetypes.guess_type(filename)[0] or ""
+        file_type = cls.get_file_type(filename, content_type)
+        return cls(path=filename, content_type=content_type, file_type=file_type)
+
+    @property
+    def url(self) -> str:
+        return f"{current_app.config['MEDIA_URL']}/{self.path}"
+
+    @property
+    def url_small(self) -> str:
+        stem, ext = os.path.splitext(self.path)
+        return f"{current_app.config['MEDIA_URL']}/{stem}{current_app.config['BAMBOO_SMALL_IMAGE_SUFFIX']}{ext}"
 
 
 class Site(Base):
     name: so.Mapped[str]
-    config: so.Mapped[dict] = so.mapped_column(type_=sa.JSON)
+    config: so.Mapped[Optional[dict]] = so.mapped_column(type_=sa.JSON)
     template_url: so.Mapped[Optional[str]]
     deploy_target: so.Mapped[Optional[str]]
     deploy_method: so.Mapped[Optional[str]]
